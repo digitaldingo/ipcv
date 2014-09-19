@@ -1,14 +1,18 @@
 import abc
 import multiprocessing as mp
 import multiprocessing.dummy as mpd
+import os
+
+from joblib import Parallel, delayed
 
 import scipy.ndimage as nd
 import numpy as np
 
 from .response import Response
 
+from IPython import embed
 
-class Filter(metaclass=abc.ABCMeta):
+class Filter():
     """
     Generic filter class.
     """
@@ -66,8 +70,9 @@ class GaussianFilter(Filter):
             fsize += 1
         impulse = np.zeros([fsize,fsize])
         impulse[fsize // 2,fsize // 2] = 1
-        self.filter = nd.gaussian_filter(impulse, sigma=self.sigma, order=self.order,
-                                         mode=self.mode, cval=self.cval)
+        self.filter = nd.gaussian_filter(impulse, sigma=self.sigma,
+                                         order=self.order, mode=self.mode,
+                                         cval=self.cval)
 
 
     def __repr__(self):
@@ -83,7 +88,8 @@ class LOGFilter(GaussianFilter):
     A Laplacian of Gaussian (LOG) filter.
     """
     def __init__(self, sigma, mode="constant", cval=0):
-        super().__init__(sigma=sigma, order=2, mode=mode, cval=cval)
+        GaussianFilter.__init__(self, sigma=sigma, order=2, mode=mode,
+                                cval=cval)
 
 
     def __repr__(self):
@@ -124,7 +130,8 @@ class EdgeFilter(AnisotropicGaussianFilter):
     An edge filter based on an isotropic Gaussian filter.
     """
     def __init__(self, sigma, order=(1,0), angle=0, **kwargs):
-        super().__init__(sigma=sigma, order=order, angle=angle, **kwargs)
+        AnisotropicGaussianFilter.__init__(self, sigma=sigma, order=order,
+                                           angle=angle, **kwargs)
 
     def __repr__(self):
         return "EdgeFilter(sigma = {}, angle = {})".format(self.sigma, self.angle)
@@ -136,11 +143,14 @@ class BarFilter(AnisotropicGaussianFilter):
     A bar filter based on an isotropic Gaussian filter.
     """
     def __init__(self, sigma, order=(2,0), angle=0, **kwargs):
-        super().__init__(sigma=sigma, order=order, angle=angle, **kwargs)
+        AnisotropicGaussianFilter.__init__(self, sigma=sigma, order=order,
+                                           angle=angle, **kwargs)
 
     def __repr__(self):
         return "BarFilter(sigma = {}, angle = {})".format(self.sigma, self.angle)
 
+def bla(f, x):
+    return f.apply(x)
 
 
 class StackedFilters:
@@ -157,33 +167,45 @@ class StackedFilters:
     def add_filter(self, filter):
         self.filters = np.append(self.filters, filter)
 
-    def apply(self, image, **kwargs):
+    def apply(self, image, n_jobs=1, **kwargs):
         """
         Apply the filters to an image.
         """
-        self.responses = []
+        #self.responses = []
 
-        pool = mp.Pool(None)
-        dpool = mpd.Pool(None)
+        #verbosity = int(os.environ['VERBOSITY'])
+        # Seems to work! Perhaps try to do a plot...
+        #self.responses = Parallel(n_jobs=n_jobs)(delayed(bla)(filter, image) for
+        #                                         filter in self.filters)
 
-        for f,filter in enumerate(self.filters):
-            if type(filter).__name__ == "StackedFilters":
-                # Apply the StackedFilters in a separate thread to avoid
-                # blocking the current one.
-                self.responses.append(dpool.apply_async(filter.apply, [image]))
-            else:
-                self.responses.append(pool.apply_async(filter.apply, [image]))
+        self.responses = [bla(filter, image) for filter in self.filters]
 
-        # Close at join multiprocessing pool:
-        pool.close()
-        pool.join()
+        #embed()
+        #stop
 
-        # Close at join threading pool:
-        dpool.close()
-        dpool.join()
+        #pool = mp.Pool(None)
+        #dpool = mpd.Pool(None)
 
-        # Get the results:
-        self._get_responses()
+        #for f,filter in enumerate(self.filters):
+        #    embed()
+        #    # FIXME: Only reasonable thing to do: use joblib NOW!
+        #    if type(filter).__name__ == "StackedFilters":
+        #        # Apply the StackedFilters in a separate thread to avoid
+        #        # blocking the current one.
+        #        self.responses.append(dpool.apply_async(filter.apply, [image]))
+        #    else:
+        #        self.responses.append(pool.apply_async(filter.apply, [image]))
+
+        ## Close at join multiprocessing pool:
+        #pool.close()
+        #pool.join()
+
+        ## Close at join threading pool:
+        #dpool.close()
+        #dpool.join()
+
+        ## Get the results:
+        #self._get_responses()
 
         return self
 
@@ -196,6 +218,7 @@ class StackedFilters:
             if type(res).__name__ == "StackedFilters":
                 res._get_responses()
             elif type(res).__name__ == "ApplyResult":
+                embed()
                 self.responses[r] = res.get()
 
     @property
