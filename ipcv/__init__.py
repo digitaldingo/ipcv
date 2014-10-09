@@ -3,6 +3,8 @@ from .feature_histograms import go_hist, si_hist, josi_hist, osi_hist
 from .jetdescriptor import JetDescriptor
 from .scalespace import scalespace, ScaleSpace, gradient_orientation, \
     shape_index
+from filters import Filter, GaussianFilter, LOGFilter, EdgeFilter, BarFilter, \
+    StackedFilters
 
 
 __all__ = ['bif_hist',
@@ -16,4 +18,11 @@ __all__ = ['bif_hist',
            'josi_hist',
            'JetDescriptor',
            'scalespace',
-           'ScaleSpace']
+           'ScaleSpace',
+           'Filter',
+           'GaussianFilter',
+           'LOGFilter',
+           'EdgeFilter',
+           'BarFilter',
+           'StackedFilters',
+]

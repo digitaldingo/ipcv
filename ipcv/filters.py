@@ -1,28 +1,70 @@
 import abc
-import multiprocessing as mp
-import multiprocessing.dummy as mpd
-import os
-
-from joblib import Parallel, delayed
 
 import scipy.ndimage as nd
 import numpy as np
 
-from .response import Response
+def gauss(x, y, sigx, sigy):
+    """
+    Calculate the function value of Gaussian distribution.
+    """
+    r = np.exp(-((x)**2/(2*sigx**2) + (y)**2/(2*sigy**2)))
+    r /= np.sum(r)
+    return r
 
-from IPython import embed
+
+def gauss_x(x, y, sigx, sigy):
+    """
+    Calculate the function value of the first derivative of a Gaussian
+    distribution.
+    """
+    r =(-x/sigx**2) * gauss(x, y, sigx, sigy)
+    return r
+
+
+def gauss_xx(x, y, sigx, sigy):
+    """
+    Calculate the function value of the second derivative of a Gaussian
+    distribution.
+    """
+    r = ((x**2 - sigx**2) / sigx**4) * gauss(x, y, sigx, sigy)
+    return r
+
 
 class Filter():
     """
     Generic filter class.
     """
 
+    def __init__(self, sigma, angle=0, accuracy=2.):
+
+        if type(sigma) not in (tuple, list, np.ndarray):
+            self.sigma = [sigma, sigma]
+        else:
+            self.sigma = sigma
+
+        self.angle = angle*np.pi/180
+
+        # Construct filter response for the convolution:
+        fsize = np.ceil(np.max(self.sigma) * accuracy)
+        if fsize % 2 == 0:
+            fsize += 1
+
+        values = np.arange(-fsize,fsize+1)
+        x, y = np.meshgrid(values, values)
+
+        u = x*np.cos(self.angle) + y*np.sin(self.angle)
+        v = -x*np.sin(self.angle) + y*np.cos(self.angle)
+
+        self.filter = self._filter(v, u, self.sigma[0], self.sigma[1])
+
+
     @abc.abstractmethod
-    def _filter(self, image, **kwargs):
+    def _filter(self):
         """
         Method implementing the filter. This must be implemented by every
         inheriting class.
         """
+
 
     def normalise(self):
         """
@@ -34,22 +76,17 @@ class Filter():
         # they seem to also subtract the mean of the filter. That is, however,
         # not done in the paper.
 
-        #self.filter -= np.mean(self.filter)
+        self.filter -= np.mean(self.filter)
 
         self.filter /= np.sum(np.abs(self.filter))
 
 
     def apply(self, image, **kwargs):
         """
-        Apply the the filter to an image. Bonus if the image is an Image instance.
+        Apply the the filter to an image.
         """
 
-        if type(image).__name__ == 'Image':
-            res = self._filter(image.image, **kwargs)
-            response = Response(res, self.__repr__)
-            image.add_response(response)
-        else:
-            response = self._filter(image, **kwargs)
+        response = nd.convolve(image, self.filter)
 
         return response
 
@@ -58,99 +95,70 @@ class GaussianFilter(Filter):
     """
     A Gaussian filter.
     """
-    def __init__(self, sigma, order=0, mode="constant", cval=0):
-        self.sigma = sigma
-        self.order = order
-        self.mode = mode
-        self.cval = cval
-
-
-        fsize = int(np.max(self.sigma) * 5)
-        if fsize % 2 == 0:
-            fsize += 1
-        impulse = np.zeros([fsize,fsize])
-        impulse[fsize // 2,fsize // 2] = 1
-        self.filter = nd.gaussian_filter(impulse, sigma=self.sigma,
-                                         order=self.order, mode=self.mode,
-                                         cval=self.cval)
-
+    def __init__(self, sigma, **kwargs):
+        Filter.__init__(self, sigma=sigma, **kwargs)
 
     def __repr__(self):
         return "GaussianFilter(sigma = {})".format(self.sigma)
 
-    def _filter(self, image, **kwargs):
-        return nd.convolve(image, self.filter)
+    def _filter(self, x, y, sigx, sigy):
+        #return nd.convolve(image, self.filter)
+        return gauss(x, y, sigx, sigy)
+
+    def normalise(self):
+        """
+        L1 normalises the filter, as done in Varma & Zisserman (2005).
+        """
+        # According to the filter bank script found at
+        # http://www.robots.ox.ac.uk/~vgg/research/texclass/filters.html
+        # they seem to also subtract the mean of the filter. That is, however,
+        # not done in the paper.
+
+        self.filter -= np.mean(self.filter)
+
+        self.filter /= np.sum(np.abs(self.filter))
 
 
-
-class LOGFilter(GaussianFilter):
+class LOGFilter(Filter):
     """
     A Laplacian of Gaussian (LOG) filter.
     """
-    def __init__(self, sigma, mode="constant", cval=0):
-        GaussianFilter.__init__(self, sigma=sigma, order=2, mode=mode,
-                                cval=cval)
-
+    def __init__(self, sigma, **kwargs):
+        Filter.__init__(self, sigma=sigma, **kwargs)
 
     def __repr__(self):
         return "LOGFilter(sigma = {})".format(self.sigma)
 
+    def _filter(self, x, y, sigx, sigy):
+        return gauss_xx(x, y, sigx, sigy) + gauss_xx(y, x, sigx, sigy)
 
 
-class AnisotropicGaussianFilter(Filter):
-    """
-    An isotropic Gaussian filter.
-    """
-    def __init__(self, sigma, order, angle=0, mode="mirror", cval=0, factor=4.8):
-        self.sigma = sigma
-        self.order = order
-        self.angle = angle
-        self.mode = mode
-        self.cval = cval
-
-        fsize = int(np.max(self.sigma) * 5)
-        if fsize % 2 == 0:
-            fsize += 1
-        impulse = np.zeros([fsize,fsize])
-        impulse[fsize // 2,fsize // 2] = 1
-        f = nd.gaussian_filter(impulse, sigma=self.sigma, order=self.order,
-                               mode=self.mode, cval=self.cval)
-        self.filter = nd.interpolation.rotate(f, self.angle, reshape=False)
-
-    def __repr__(self):
-        return "AnisotropicGaussianFilter(sigma = {}, order = {}, angle = {})".format(self.sigma)
-
-    def _filter(self, image, fft_image=False):
-        return nd.convolve(image, self.filter)
-
-
-
-class EdgeFilter(AnisotropicGaussianFilter):
+class EdgeFilter(Filter):
     """
     An edge filter based on an isotropic Gaussian filter.
     """
-    def __init__(self, sigma, order=(1,0), angle=0, **kwargs):
-        AnisotropicGaussianFilter.__init__(self, sigma=sigma, order=order,
-                                           angle=angle, **kwargs)
+    def __init__(self, sigma, **kwargs):
+        Filter.__init__(self, sigma=sigma, **kwargs)
 
     def __repr__(self):
         return "EdgeFilter(sigma = {}, angle = {})".format(self.sigma, self.angle)
 
+    def _filter(self, x, y, sigx, sigy):
+        return gauss_x(x, y, sigx, sigy)
 
 
-class BarFilter(AnisotropicGaussianFilter):
+class BarFilter(Filter):
     """
     A bar filter based on an isotropic Gaussian filter.
     """
-    def __init__(self, sigma, order=(2,0), angle=0, **kwargs):
-        AnisotropicGaussianFilter.__init__(self, sigma=sigma, order=order,
-                                           angle=angle, **kwargs)
+    def __init__(self, sigma, **kwargs):
+        Filter.__init__(self, sigma=sigma, **kwargs)
 
     def __repr__(self):
         return "BarFilter(sigma = {}, angle = {})".format(self.sigma, self.angle)
 
-def bla(f, x):
-    return f.apply(x)
+    def _filter(self, x, y, sigx, sigy):
+        return gauss_xx(x, y, sigx, sigy)
 
 
 class StackedFilters:
@@ -171,41 +179,9 @@ class StackedFilters:
         """
         Apply the filters to an image.
         """
-        #self.responses = []
 
-        #verbosity = int(os.environ['VERBOSITY'])
-        # Seems to work! Perhaps try to do a plot...
-        #self.responses = Parallel(n_jobs=n_jobs)(delayed(bla)(filter, image) for
-        #                                         filter in self.filters)
-
-        self.responses = [bla(filter, image) for filter in self.filters]
-
-        #embed()
-        #stop
-
-        #pool = mp.Pool(None)
-        #dpool = mpd.Pool(None)
-
-        #for f,filter in enumerate(self.filters):
-        #    embed()
-        #    # FIXME: Only reasonable thing to do: use joblib NOW!
-        #    if type(filter).__name__ == "StackedFilters":
-        #        # Apply the StackedFilters in a separate thread to avoid
-        #        # blocking the current one.
-        #        self.responses.append(dpool.apply_async(filter.apply, [image]))
-        #    else:
-        #        self.responses.append(pool.apply_async(filter.apply, [image]))
-
-        ## Close at join multiprocessing pool:
-        #pool.close()
-        #pool.join()
-
-        ## Close at join threading pool:
-        #dpool.close()
-        #dpool.join()
-
-        ## Get the results:
-        #self._get_responses()
+        self.responses = [filter.apply(image) for filter in
+                          self.filters]
 
         return self
 
@@ -218,7 +194,6 @@ class StackedFilters:
             if type(res).__name__ == "StackedFilters":
                 res._get_responses()
             elif type(res).__name__ == "ApplyResult":
-                embed()
                 self.responses[r] = res.get()
 
     @property
@@ -239,93 +214,3 @@ class StackedFilters:
         """
         for filter in self.filters:
             filter.normalise()
-
-
-
-
-
-class FilterBank:
-    """
-    Container class for filters.
-    """
-
-    def __init__(self, bank_type='MR8', **kwargs):
-        self.bank = StackedFilters()
-        self.bank_type = bank_type
-
-        for key in kwargs.keys():
-            setattr(key, kwargs[key])
-
-        if bank_type == 'MR8':
-            # Define the filter bank according to Varma & Zisserman (2005).
-
-            if 'sigma' not in kwargs.keys():
-                self.sigma = 10
-            if 'scales' not in kwargs.keys():
-                self.scales = ((1,3),(2,6),(4,12))
-            if 'angles' not in kwargs.keys():
-                self.angles = np.linspace(0, 180, 6, endpoint=False)
-
-
-            self.add(GaussianFilter(self.sigma))
-            self.add(LOGFilter(self.sigma))
-
-            for scale in self.scales:
-                sf = StackedFilters()
-                for angle in self.angles:
-                    sf.add_filter(EdgeFilter(scale, angle=angle))
-                self.add(sf)
-
-            for scale in self.scales:
-                sf = StackedFilters()
-                for angle in self.angles:
-                    sf.add_filter(BarFilter(scale, angle=angle))
-                self.add(sf)
-
-            # Normalise all filters:
-            self.bank.normalise()
-
-
-    def __repr__(self):
-        return "\n".join([repr(f) for f in self.bank])
-
-
-    def add(self, filter):
-        """
-        Add filter to the filter bank.
-        """
-        self.bank.add_filter(filter)
-
-
-    def apply(self, im):
-        """
-        Apply the filter bank to an image.
-        """
-        if type(im).__name__ == "Image":
-            image = im.image
-        else:
-            image = im
-
-        responses = self.bank.apply(image).responses
-
-
-        if self.bank_type == "MR8":
-            for r,res in enumerate(responses):
-                if type(res).__name__ == "StackedFilters":
-                    responses[r] = res.maximum_response
-
-            # Convert to numpy array:
-            responses = np.asarray(responses)
-
-            # Magic contrast normalisation:
-            L2 = np.sqrt(np.sum(responses**2, axis=0))
-            responses *= np.log(1 + L2/0.03)/L2
-
-
-        if type(im).__name__ == "Image":
-            for r,res in enumerate(responses):
-                response = Response(res, repr(self.bank.filters[r]))
-                im.add_response(response)
-
-        return responses
-
